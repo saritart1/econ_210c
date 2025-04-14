@@ -118,3 +118,5 @@ title('IRF of \pi to Monetary Shock');
 xlabel('Horizon'); ylabel('Response');
 
 disp('2) True IRFs computed and plotted using your derived coefficients.');
+% Save figure
+saveas(gcf, 'IRFs_TrueModel.png');
