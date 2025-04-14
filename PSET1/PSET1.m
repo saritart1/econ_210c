@@ -422,4 +422,4 @@ title('Median IRF of y to Monetary Shock (Local Projection)');
 xlabel('Horizon'); ylabel('Response of y');
 grid on;
 
-saveas(gcf, 'IRF_LocalProjection.png');
+saveas(gcf, 'Q5_IRF_LocalProjection.png');
