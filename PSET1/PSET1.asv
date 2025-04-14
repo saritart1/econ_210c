@@ -123,7 +123,7 @@ xlabel('Horizon'); ylabel('Response');
 
 disp('2) True IRFs computed and plotted using your derived coefficients.');
 % Save figure
-saveas(gcf, 'IRFs_Q2_TrueModel.png');
+saveas(gcf, 'IRFs_TrueModel.png');
 
 
 %% 3. SIMULATE DATA AND ESTIMATE MISSPECIFIED MODELS
@@ -246,122 +246,7 @@ end
 
 disp('3) Median IRFs for misspecified models plotted.');
 % Save the figure
-saveas(gcf, 'IRFs_Q3_MisspecifiedModels.png');
+saveas(gcf, 'IRFs_MisspecifiedModels.png');
 
-%% QUESTION 4: Estimate Model with y(t-1), Delta M(t) to Delta M(t-6)
-% ------------------------------------------------------------------------
-
-clear; clc; close all;
-
-% -- Suppose you already have these from earlier assignments:
-a     = 0.5;     % True model param (from Q1)
-b     = 0.0974;     % True model param
-c     = -0.2295;    % True model param
-d     = -0.1874;    % True model param
-rho   = 0.8;      % AR coeff for M_t
-sigEps= 0.00066;  % stdev of monetary shock
-sigEta= 0.007;    % stdev of productivity shock
-T     = 500;      % Sample size
-reps  = 500;      % Number of simulations
-H_irf = 20;       % IRF horizon
-yStar = 0;        % Potential output
-
-rng(123); % Reproducibility
-
-% We'll store IRFs across replications
-IRF_money_all = zeros(H_irf+1, reps);
-
-for rr = 1:reps
-    
-    %% (1) Simulate data from true model
-    y_data = zeros(T,1);
-    M_data = zeros(T,1);
-
-    eps_vec = sigEps * randn(T,1);  % monetary shocks
-    eta_vec = sigEta * randn(T,1);  % productivity shocks
-
-    % Initialize
-    y_data(1) = 0;
-    M_data(1) = 0;
-
-    for t = 2:T
-        M_data(t) = rho * M_data(t-1) + eps_vec(t);
-        deltaM_t  = M_data(t) - M_data(t-1);
-        
-        % True output eq:
-        y_data(t) = a * y_data(t-1) + b * deltaM_t + c * eps_vec(t) + d * eta_vec(t);
-    end
-    
-    %% (2) Build the regression: y_t on [y_{t-1}, DeltaM_t, ..., DeltaM_{t-6}]
-    deltaM_data = [0; diff(M_data)];  % money growth
-
-    % We'll have 1 lag of y, plus current + 6 lags of DeltaM => 7 DeltaM terms total
-    lags_output = 1;  
-    lags_money  = 6;  
-
-    Y_lag = lagmatrix(y_data, 1:lags_output);   
-    M_lag = lagmatrix(deltaM_data, 0:lags_money); 
-
-    % Drop initial NaN rows
-    startIdx = lags_money + 1 + 1;  
-    Y_dep    = y_data(startIdx:end);
-    X        = [ ones(length(Y_dep),1), ...
-                 Y_lag(startIdx:end,:), ...
-                 M_lag(startIdx:end,:) ];
-
-    coeffs = (X' * X) \ (X' * Y_dep);
-    
-    % Residual stdev
-    res       = Y_dep - X * coeffs;
-    sigma_eps = std(res);
-
-    %% (3) Build companion matrix for IRF
-    % State vector: [ y_{t-1}, DeltaM_t, DeltaM_{t-1}, ..., DeltaM_{t-6} ]
-    state_size = 8;  
-    A = zeros(state_size, state_size);
-
-    % Interpreting 'coeffs':
-    %  - coeffs(1) is constant
-    %  - coeffs(2) is y_{t-1}'s coeff
-    %  - coeffs(3:9) are the 7 money-growth terms (DeltaM_t..DeltaM_{t-6})
-
-    % Row 1 of A has the regression eq (minus constant)
-    A(1,1)      = coeffs(2);         % y_{t-1}
-    A(1,2:8)    = coeffs(3:9)';      % 7 money-lag coeffs (transpose => row vector)
-
-    % Shift money lags down by 1 each period
-    % We'll fill the sub-block (3..8, 2..7) with eye(6)
-    A(3:8, 2:7) = eye(6);
-
-    %% (4) Compute IRF: shock is +1 std dev in current DeltaM_t
-    irf = zeros(H_irf+1,1);
-    
-    % Impact state (time 0):
-    state = zeros(state_size,1);
-    state(2) = sigma_eps;   % put shock in current DeltaM slot
-
-    % Immediate impact on y
-    irf(1) = A(1,:) * state; 
-
-    % Evolve
-    for h = 1:H_irf
-        state = A * state;
-        irf(h+1) = state(1);
-    end
-    
-    IRF_money_all(:, rr) = irf;
-end
-
-%% (5) Plot median IRF
-figure('Name','Q4: IRF of y to Money Growth Shock','Position',[100 100 700 400]);
-irf_median = median(IRF_money_all, 2);
-
-plot(0:H_irf, irf_median, '-o','LineWidth',1.5);
-title('Median IRF of y to Monetary Shock (Q4 Model)');
-xlabel('Horizon'); ylabel('Response of y');
-grid on;
-
-% Save figure if desired
-saveas(gcf, 'IRF_Q4_Misspecified.png');
 
 
