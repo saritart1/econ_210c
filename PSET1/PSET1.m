@@ -124,3 +124,127 @@ xlabel('Horizon'); ylabel('Response');
 disp('2) True IRFs computed and plotted using your derived coefficients.');
 % Save figure
 saveas(gcf, 'IRFs_TrueModel.png');
+
+
+%% 3. SIMULATE DATA AND ESTIMATE MISSPECIFIED MODELS
+% --------------------------------------------------
+
+clear; clc; close all;
+
+% Set parameters from your model
+beta  = 0.99;
+kappa = 0.13;
+rho   = 0.8;
+yStar = 0;
+
+e = 0.3;
+f = 0.2;
+g = 0.1;
+h = 0.05;
+
+denom = beta * e + kappa;
+
+% Coefficients for true model
+a = e / denom;
+b = (f - beta * f * rho) / denom;
+c = (g - beta * f) / denom;
+d = (h - kappa) / denom;
+
+fprintf('True Model Coefficients:\n a=%.4f, b=%.4f, c=%.4f, d=%.4f\n', a, b, c, d);
+
+% Simulation settings
+T = 500;       % Time series length
+reps = 500;    % Number of replications
+H_irf = 20;    % IRF horizon
+
+sigEps = 0.00066;   % Std dev of monetary shock
+sigEta = 0.007;     % Std dev of productivity shock
+
+rng(123);  % For reproducibility - seed
+
+% Define lag lengths for misspecified models
+lagList = [1, 4, 12]; %for Model 1, Model 2 and Model 3
+
+% Storage for IRFs
+IRFs_all = zeros(H_irf+1, reps, length(lagList));
+
+% Loop over replications
+for rr = 1:reps
+    
+    % Preallocate
+    y_data = zeros(T,1);
+    M_data = zeros(T,1);
+    
+    % Generate shocks
+    eps_vec = sigEps * randn(T,1); % monetary
+    eta_vec = sigEta * randn(T,1); % productivity
+    
+    % Initial conditions
+    y_data(1) = 0;
+    M_data(1) = 0;
+    
+    % Simulate the true model % from question 1
+    for t=2:T
+        M_data(t) = rho*M_data(t-1) + eps_vec(t);
+        deltaM_t = M_data(t) - M_data(t-1);
+        
+        y_data(t) = a*y_data(t-1) + b*deltaM_t + c*eps_vec(t) + d*eta_vec(t);
+    end
+    
+    % Estimate misspecified models
+    for m = 1:length(lagList)
+        
+        p_lags = lagList(m);
+        
+        % Build lag matrix
+        Y_lag = lagmatrix(y_data, 1:p_lags);
+        Y_dep = y_data(p_lags+1:end);
+        X = [ones(T-p_lags,1), Y_lag(p_lags+1:end,:)]; % Add constant
+        
+        % Estimate AR(p) via OLS
+        coeffs = (X' * X) \ (X' * Y_dep);
+        
+        % Build companion form matrix for IRF
+        A = zeros(p_lags, p_lags);
+        A(1,:) = coeffs(2:end)';
+        A(2:end,1:end-1) = eye(p_lags-1);
+        
+        % Shock scaling: residual std
+        res = Y_dep - X * coeffs;
+        sigma_eps = std(res);
+        
+        % Compute IRF for y_t
+        irf = zeros(H_irf+1,1);
+        state = zeros(p_lags,1);
+        
+        % Impact response
+        irf(1) = sigma_eps;
+        state(1) = sigma_eps;
+        
+        % Propagate IRF
+        for h = 1:H_irf
+            state = A * state;
+            irf(h+1) = state(1);
+        end
+        
+        IRFs_all(:, rr, m) = irf;
+    end
+end
+
+figure('Name','Median IRFs - Misspecified Models','Position',[100 100 1000 400]);
+
+for m = 1:length(lagList)
+    
+    subplot(1,length(lagList),m);
+    irf_median = median(IRFs_all(:,:,m),2); % Median across replications
+    
+    plot(0:H_irf, irf_median, '-o','LineWidth',1.5);
+    title(sprintf('Misspecified AR(%d)', lagList(m)));
+    xlabel('Horizon'); ylabel('Response of y');
+    grid on;
+end
+
+disp('3) Median IRFs for misspecified models plotted.');
+% Save the figure
+saveas(gcf, 'IRFs_MisspecifiedModels.png');
+
