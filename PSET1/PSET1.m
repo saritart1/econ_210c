@@ -364,4 +364,62 @@ grid on;
 % Save figure if desired
 saveas(gcf, 'IRF_Q4_Misspecified.png');
 
+%% QUESTION 5: Jordà Local Projection IRF
+% ------------------------------------------------------------------------
 
+clearvars -except a b c d rho sigEps sigEta reps T H_irf yStar % Keep parameters
+
+rng(123); % For reproducibility
+
+H_lp = 20;  % Horizon for local projection
+
+IRF_lp_all = zeros(H_lp+1, reps);
+
+for rr = 1:reps
+    
+    % (1) Simulate data from true model
+    y_data = zeros(T,1);
+    M_data = zeros(T,1);
+
+    eps_vec = sigEps * randn(T,1); % Monetary shocks (this is your Shock_t)
+    eta_vec = sigEta * randn(T,1); % Productivity shocks
+
+    y_data(1) = 0;
+    M_data(1) = 0;
+
+    for t = 2:T
+        M_data(t) = rho * M_data(t-1) + eps_vec(t);
+        deltaM_t  = M_data(t) - M_data(t-1);
+        
+        y_data(t) = a * y_data(t-1) + b * deltaM_t + c * eps_vec(t) + d * eta_vec(t);
+    end
+    
+    % (2) For each horizon h, run the local projection regression
+    beta_h = zeros(H_lp+1, 1); % Store IRF for this replication
+    
+    for h = 0:H_lp
+        idx = 1:(T-h);
+        Y_h = y_data(idx + h);
+        Shock = eps_vec(idx);  % This is your "identified" shock
+        
+        % Regress y_{t+h} on shock_t + constant
+        X = [ones(length(Shock),1), Shock];
+        coeff = (X' * X) \ (X' * Y_h);
+        
+        beta_h(h+1) = coeff(2); % Coefficient on shock
+    end
+    
+    IRF_lp_all(:, rr) = beta_h;
+end
+
+%% Plot median IRF
+
+figure('Name','Local Projection IRF','Position',[100 100 700 400]);
+irf_median_lp = median(IRF_lp_all, 2);
+
+plot(0:H_lp, irf_median_lp, '-o','LineWidth',1.5);
+title('Median IRF of y to Monetary Shock (Local Projection)');
+xlabel('Horizon'); ylabel('Response of y');
+grid on;
+
+saveas(gcf, 'IRF_LocalProjection.png');
