@@ -11,6 +11,10 @@
 % h = 0.05
 % (I will double check with Paula if this is correct or I need to properly
 % find them, but I still don't know how)
+% I should also ask to Paula if I should assume that all the variables in
+% SS = 0 (y_t, m_t and pi_t) and also y_star? 
+% For Paula: can I assume the Phillips curve to be inflation = kappa(output
+% gap) or should I derive the expectation of inflation?
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 clear; clc; close all;
