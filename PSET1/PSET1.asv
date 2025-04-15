@@ -152,7 +152,7 @@ for rr = 1:reps
     
     % Initial conditions
     y_data(1) = 0;
-    M_data(1) = 1;
+    M_data(1) = 0;
     
     % Simulate the true model % from question 1
     for t=2:T
