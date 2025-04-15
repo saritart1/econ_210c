@@ -121,275 +121,306 @@ saveas(gcf, 'IRFs_Q2_TrueModel.png');
 %% 3. SIMULATE DATA AND ESTIMATE MISSPECIFIED MODELS
 % --------------------------------------------------
 
-clearvars -except a b c d beta kappa rho yStar % Keep parameters
+clearvars -except a b c d beta kappa rho yStar irf_y;
+rng(12345,'twister');  % for reproducibility - seed
 
-% Simulation settings
-T = 500;       % Time series length
-reps = 500;    % Number of replications
-H_irf = 20;    % IRF horizon
+% For IRFs or references
+H_irf = 20;   % horizon for IRF
 
-sigEps = 0.00066;   % Std dev of monetary shock
-sigEta = 0.007;     % Std dev of productivity shock
+T      = 500;     % Length of each simulated series
+Nrep   = 500;     % Number of Monte Carlo replications
+Tburn  = 100;     % Burn-in to reduce influence of initial conditions
+sigma_e = 0.00066;  % std dev of monetary shock
+sigma_n = 0.007;    % std dev of productivity shock
 
-rng(123);  % For reproducibility - seed
+%% 1. SIMULATION SETTINGS
+T      = 500;    % Sample size (after burn-in)
+Tburn  = 100;    % Burn-in period length
+Nrep   = 500;    % Number of Monte Carlo replications
 
-% Define lag lengths for misspecified models
-lagList = [1, 4, 12]; %for Model 1, Model 2 and Model 3
+% Preallocate matrices to store IRFs for each model (each column is one replication)
+IRF_model1 = zeros(H_irf+1, Nrep);  % For Model 1 (1 lag)
+IRF_model2 = zeros(H_irf+1, Nrep);  % For Model 2 (4 lags)
+IRF_model3 = zeros(H_irf+1, Nrep);  % For Model 3 (12 lags)
 
-% Storage for IRFs
-IRFs_all = zeros(H_irf+1, reps, length(lagList));
-
-% Loop over replications
-for rr = 1:reps
+%% 2. MONTE CARLO SIMULATIONS
+for irep = 1:Nrep
+    %% 2a. Generate Shocks for the entire simulation sample (burn-in+T)
+    eps_draw = sigma_e * randn(Tburn + T, 1);  % Shocks for M_t
+    eta_draw = sigma_n * randn(Tburn + T, 1);    % Shocks for y_t (eta)
     
-    % Preallocate
-    y_data = zeros(T,1);
-    M_data = zeros(T,1);
+    %% 2b. Simulate the True Model
+    % Preallocate arrays for M_t and y_t
+    M = zeros(Tburn+T, 1);
+    y = zeros(Tburn+T, 1);
     
-    % Generate shocks
-    eps_vec = sigEps * randn(T,1); % monetary
-    eta_vec = sigEta * randn(T,1); % productivity
+    % Initialize first two values.
+    M(1) = 0;
+    M(2) = rho * M(1) + eps_draw(2);
+    y(1) = 0;
+    % For t = 2, assume M(0)=0 so that Delta M(1)=M(1)-0.
+    y(2) = a * y(1) + b * (M(1) - 0) + c * eps_draw(2) + d * eta_draw(2);
     
-    % Initial conditions
-    y_data(1) = 0;
-    M_data(1) = 0;
-    
-    % Simulate the true model % from question 1
-    for t=2:T
-        M_data(t) = rho*M_data(t-1) + eps_vec(t);
-        
-        y_data(t) = a*y_data(t-1) + b*M_data(t-1) + c*eps_vec(t) + d*eta_vec(t);
+    % Start simulation at t = 3 to avoid indexing below 1.
+    for t = 3:(Tburn+T)
+        M(t) = rho * M(t-1) + eps_draw(t);
+        %dM_tminus1 = M(t-1) - M(t-2); % Compute Delta M_{t-1}
+        y(t) = a * y(t-1) + b * M(t-1) + c * eps_draw(t) + d * eta_draw(t);
     end
     
-    % Estimate misspecified models
-    for m = 1:length(lagList)
-        
-        p_lags = lagList(m);
-        
-        % Build lag matrix
-        Y_lag = lagmatrix(y_data, 1:p_lags);
-        Y_dep = y_data(p_lags+1:end);
-        X = [ones(T-p_lags,1), Y_lag(p_lags+1:end,:)]; % Add constant
-        
-        % Estimate AR(p) via OLS
-        coeffs = (X' * X) \ (X' * Y_dep);
-        
-        % Build companion form matrix for IRF
-        A = zeros(p_lags, p_lags);
-        A(1,:) = coeffs(2:end)';
-        A(2:end,1:end-1) = eye(p_lags-1);
-        
-        % Shock scaling: residual std
-        res = Y_dep - X * coeffs;
-        sigma_eps = std(res);
-        
-        % Compute IRF for y_t
-        irf = zeros(H_irf+1,1);
-        state = zeros(p_lags,1);
-        
-        % Impact response
-        irf(1) = sigma_eps;
-        state(1) = sigma_eps;
-        
-        % Propagate IRF
-        for h = 1:H_irf
-            state = A * state;
-            irf(h+1) = state(1);
+    % Discard burn-in period.
+    M = M(Tburn+1:end);
+    y = y(Tburn+1:end);
+    
+    %% 2c. Construct eps_t from simulated M: eps_t = M_t - rho*M_{t-1}.
+    eps_data = zeros(T,1);
+    for t = 2:T
+       eps_data(t) = M(t) - rho * M(t-1);
+    end
+    % (We will be using observations starting at t=2 whenever we include lagged values.)
+    
+    %% 2d. Estimate the three misspecified models using OLS with pinv.
+    % --- Model 1: y_t = constant + y_{t-1} + eps_t ---
+    Y_reg1 = y(2:end);  % Use observations 2:T for y_t.
+    X_reg1 = [ones(T-1,1), y(1:end-1), eps_data(2:end)];
+    b_hat1 = pinv(X_reg1) * Y_reg1;  % b_hat1 = [alpha; phi1; gamma]
+    
+    % --- Compute the IRF for Model 1 inline ---
+    % For a one-time eps shock: we set eps_1=1 (only in period 1) and 0 otherwise.
+    % Let the estimated equation be: y_t = alpha + phi1*y_{t-1} + gamma*eps_t.
+    irf_temp = zeros(H_irf+1,1);
+    % At t = 1, since lags are zero:
+    irf_temp(1) = b_hat1(1) + b_hat1(end);  % = alpha + gamma
+    % For t = 2 to H+1, no shock after period 1 (eps=0).
+    for t = 2:(H_irf+1)
+        lag_sum = 0;
+        % p=1 for Model 1.
+        if t-1 >= 1
+            lag_sum = lag_sum + b_hat1(2)*irf_temp(t-1);
         end
-        
-        IRFs_all(:, rr, m) = irf;
+        irf_temp(t) = b_hat1(1) + lag_sum;
     end
+    IRF_model1(:,irep) = irf_temp;
+    
+    % --- Model 2: y_t = constant + 4 lags of y + eps_t ---
+    p2 = 4;
+    Y_reg2 = y(p2+1:end);
+    Xtmp = [];
+    for j = 1:p2
+        Xtmp = [Xtmp, y(p2+1 - j : end - j)];
+    end
+    Etmp = eps_data(p2+1:end);
+    X_reg2 = [ones(T-p2,1), Xtmp, Etmp];
+    b_hat2 = pinv(X_reg2) * Y_reg2;  % b_hat2 = [alpha; phi1; phi2; phi3; phi4; gamma]
+    
+    % Compute the IRF for Model 2 inline.
+    irf_temp = zeros(H_irf+1,1);
+    irf_temp(1) = b_hat2(1) + b_hat2(end);  % initial response: alpha + gamma
+    for t = 2:(H_irf+1)
+        lag_sum = 0;
+        % Use up to 4 lags (or fewer if t-1 < 4)
+        for j = 1:min(p2, t-1)
+            lag_sum = lag_sum + b_hat2(1+j)*irf_temp(t - j);
+        end
+        irf_temp(t) = b_hat2(1) + lag_sum;
+    end
+    IRF_model2(:, irep) = irf_temp;
+    
+    % --- Model 3: y_t = constant + 12 lags of y + eps_t ---
+    p3 = 12;
+    Y_reg3 = y(p3+1:end);
+    Xtmp = [];
+    for j = 1:p3
+        Xtmp = [Xtmp, y(p3+1 - j : end - j)];
+    end
+    Etmp = eps_data(p3+1:end);
+    X_reg3 = [ones(T-p3,1), Xtmp, Etmp];
+    b_hat3 = pinv(X_reg3) * Y_reg3;  % b_hat3 = [alpha; phi1; ...; phi12; gamma]
+    
+    % Compute the IRF for Model 3 inline.
+    irf_temp = zeros(H_irf+1,1);
+    irf_temp(1) = b_hat3(1) + b_hat3(end);
+    for t = 2:(H_irf+1)
+        lag_sum = 0;
+        for j = 1:min(p3, t-1)
+            lag_sum = lag_sum + b_hat3(1+j)*irf_temp(t - j);
+        end
+        irf_temp(t) = b_hat3(1) + lag_sum;
+    end
+    IRF_model3(:, irep) = irf_temp;
+    
+end % End of Monte Carlo replications
+
+%% 3. Compute Median IRFs Across Replications
+medIRF1 = median(IRF_model1, 2);
+medIRF2 = median(IRF_model2, 2);
+medIRF3 = median(IRF_model3, 2);
+
+%% 4. Plot the Median IRFs
+figure('Name','Q3: Median IRFs from Misspecified Models','Position',[100 100 1200 400]);
+
+subplot(1,3,1)
+plot(0:H_irf, medIRF1, '-o','LineWidth',1.5);
+title('Model 1: 1 lag of y, current \epsilon_t');
+xlabel('Horizon'); ylabel('Response');
+
+subplot(1,3,2)
+plot(0:H_irf, medIRF2, '-o','LineWidth',1.5);
+title('Model 2: 4 lags of y, current \epsilon_t');
+xlabel('Horizon'); ylabel('Response');
+
+subplot(1,3,3)
+plot(0:H_irf, medIRF3, '-o','LineWidth',1.5);
+title('Model 3: 12 lags of y, current \epsilon_t');
+xlabel('Horizon'); ylabel('Response');
+
+% Save the figure if desired.
+saveas(gcf, 'IRFs_Q3_Misspecified.png');
+
+
+%% 4. Estimate Model with y(t-1), Delta M(t) to Delta M(t-6)
+% --------------------------------------------------
+
+clearvars -except a b c d beta kappa rho yStar irf_y;
+rng(12345,'twister');  % for reproducibility - seed
+
+% For IRFs or references
+H_irf = 20;   % horizon for IRF
+
+
+%% 1. SIMULATION SETTINGS
+T      = 50000;    % Sample size (after burn-in)
+Tburn  = 1000;    % Burn-in period length
+Nrep   = 1;    % Number of Monte Carlo replications
+sigma_e = 0.00066;  % std dev of monetary shock
+sigma_n = 0.007;    % std dev of productivity shock
+
+% Preallocate a matrix to store the IRF from the Q4 regression for each replication
+IRF_Q4 = zeros(H_irf+1, Nrep);
+
+% The regression will use the contemporaneous eps and 6 lags (total = 7 eps columns)
+p_eps = 6;
+
+% Preallocate the IRF matrix for storing each replication's IRF:
+IRF_Q4 = zeros(H_irf+1, Nrep);
+
+rng(12345, 'twister');  % For reproducibility
+
+%% 3. MONTE CARLO SIMULATIONS
+for irep = 1:Nrep
+    %% 3a. Simulate Data from the True Model
+    % True model:
+    %    M_t = rho*M_{t-1} + eps_t,
+    %    y_t = a*y_{t-1} + b*(M_{t-1} - M_{t-2}) + c*eps_t.
+    M = zeros(Tburn+T, 1);
+    y = zeros(Tburn+T, 1);
+    
+    % Generate eps shocks for the full sample:
+    eps_draw = sigma_e * randn(Tburn+T, 1);
+    
+    % Initialize:
+    M(1) = 0;
+    M(2) = rho*M(1) + eps_draw(2);
+    y(1) = 0;
+    % For t = 2, assume M(0)=0 so that (M(1)-M(0)) = M(1)
+    y(2) = a*y(1) + b*(M(1) - 0) + c*eps_draw(2);
+    
+    % Simulate from t = 3 to Tburn+T:
+    for t = 3:(Tburn+T)
+        M(t) = rho*M(t-1) + eps_draw(t);
+        dM_tminus1 = M(t-1) - M(t-2);
+        y(t) = a*y(t-1) + b*dM_tminus1 + c*eps_draw(t);
+    end
+    
+    % Discard burn-in:
+    M = M(Tburn+1:end);
+    y = y(Tburn+1:end);
+    
+    %% 3b. Recover the Monetary Shock Series
+    % Compute eps_t = M_t - rho*M_{t-1}
+    T_data = length(M);  % should equal T
+    eps_data = zeros(T_data, 1);
+    for t = 2:T_data
+        eps_data(t) = M(t) - rho*M(t-1);
+    end
+    % (For t=1, leave eps_data(1)=0.)
+    
+    %% 3c. Set Up the Regression Sample for Q4
+    % Our regression: y_t = alpha + phi*y_{t-1} +
+    %               gamma_0*eps_t + gamma_1*eps_{t-1} + ... + gamma_6*eps_{t-6} + error.
+    % To have all necessary lags, we start at t_start = max(2, p_eps+1).
+    t_start = max(2, p_eps+1);  % here, t_start = 7.
+    N_sample = T_data - t_start + 1;
+    
+    % Dependent variable:
+    Y_reg = y(t_start:end);
+    
+    % Construct regressor matrix X_reg:
+    %  Column 1: Constant.
+    %  Column 2: y_{t-1} (one lag of output).
+    %  Columns 3 to 9: eps_t, eps_{t-1}, ..., eps_{t-6}
+    X_reg = ones(N_sample,1);       % constant
+    X_reg = [X_reg, y(t_start-1:end-1)];  % y_{t-1}
+    
+    % Add monetary shock variables:
+    % For each observation t in the regression sample, include eps_t (lag 0)
+    % and eps_{t-1} ... eps_{t-6}.
+    for lag = 0:p_eps
+        X_reg = [X_reg, eps_data(t_start - lag:end - lag)];
+    end
+    % Now, X_reg has 1 (const) + 1 (lagged y) + 7 (eps terms) = 9 columns.
+    
+    %% 3d. Estimate the Regression by OLS using pinv
+    b_hat = pinv(X_reg)*Y_reg;
+    % b_hat(1): constant,
+    % b_hat(2): coefficient on y_{t-1} (phi),
+    % b_hat(3): gamma_0 (contemporaneous eps),
+    % b_hat(4): gamma_1, ..., b_hat(9): gamma_6.
+    
+    %% 3e. Compute the Impulse Response from the Estimated Regression
+    % We set up a one-time shock: let the shock vector e be such that e_1 = 1 and zeros thereafter.
+    % Then we compute recursively:
+    %    y_t = alpha_hat + phi_hat*y_{t-1} + (gamma_0*e_t + ... + gamma_6*e_{t-6}).
+    %
+    % For t <=0, assume initial y and e are 0.
+    alpha_hat = b_hat(1);
+    phi_hat   = b_hat(2);
+    gamma_hat = b_hat(3:3+p_eps);  % gamma_0 to gamma_6.
+    
+    % Preallocate the IRF vector:
+    irf_est = zeros(H_irf+1,1);
+    
+    % Set up the shock sequence (only one shock at t=1):
+    e = zeros(H_irf+1,1);
+    e(1) = 1;
+    
+    % At t = 1:
+    irf_est(1) = alpha_hat + gamma_hat(1);  % since lagged y = 0 and e(1)=1.
+    
+    % For t=2,...,H_irf+1, compute recursively:
+    for t = 2:(H_irf+1)
+        shock_effect = 0;
+        % Sum over j = 0 to 6: gamma_hat(j+1)*e_{t-j}, with e_{t-j}=0 if (t-j) < 1.
+        for j = 0:p_eps
+            if (t - j) >= 1
+                shock_effect = shock_effect + gamma_hat(j+1)*e(t - j);
+            end
+        end
+        irf_est(t) = alpha_hat + phi_hat*irf_est(t-1) + shock_effect;
+    end
+    
+    % Store the IRF from this replication.
+    IRF_Q4(:, irep) = irf_est;
 end
 
-figure('Name','Median IRFs - Misspecified Models','Position',[100 100 1000 400]);
+%% 4. Compute the Median IRF Across Replications and Plot
+medIRF_Q4 = median(IRF_Q4, 2);
 
-for m = 1:length(lagList)
-    
-    subplot(1,length(lagList),m);
-    irf_median = median(IRFs_all(:,:,m),2); % Median across replications
-    
-    plot(0:H_irf, irf_median, '-o','LineWidth',1.5);
-    title(sprintf('Misspecified AR(%d)', lagList(m)));
-    xlabel('Horizon'); ylabel('Response of y');
-    grid on;
-end
-
-disp('3) Median IRFs for misspecified models plotted.');
-% Save the figure
-saveas(gcf, 'IRFs_Q3_MisspecifiedModels.png');
-
-%% QUESTION 4: Estimate Model with y(t-1), Delta M(t) to Delta M(t-6)
-% ------------------------------------------------------------------------
-
-clear; clc; close all;
-
-% -- Suppose you already have these from earlier assignments:
-a     = 0.5;     % True model param (from Q1)
-b     = 0.0974;     % True model param
-c     = -0.2295;    % True model param
-d     = -0.1874;    % True model param
-rho   = 0.8;      % AR coeff for M_t
-sigEps= 0.00066;  % stdev of monetary shock
-sigEta= 0.007;    % stdev of productivity shock
-T     = 500;      % Sample size
-reps  = 500;      % Number of simulations
-H_irf = 20;       % IRF horizon
-yStar = 0;        % Potential output
-
-rng(123); % Reproducibility
-
-% We'll store IRFs across replications
-IRF_money_all = zeros(H_irf+1, reps);
-
-for rr = 1:reps
-    
-    %% (1) Simulate data from true model
-    y_data = zeros(T,1);
-    M_data = zeros(T,1);
-
-    eps_vec = sigEps * randn(T,1);  % monetary shocks
-    eta_vec = sigEta * randn(T,1);  % productivity shocks
-
-    % Initialize
-    y_data(1) = 0;
-    M_data(1) = 0;
-
-    for t = 2:T
-        M_data(t) = rho * M_data(t-1) + eps_vec(t);
-        deltaM_t  = M_data(t) - M_data(t-1);
-        
-        % True output eq:
-        y_data(t) = a * y_data(t-1) + b * deltaM_t + c * eps_vec(t) + d * eta_vec(t);
-    end
-    
-    %% (2) Build the regression: y_t on [y_{t-1}, DeltaM_t, ..., DeltaM_{t-6}]
-    deltaM_data = [0; diff(M_data)];  % money growth
-
-    % We'll have 1 lag of y, plus current + 6 lags of DeltaM => 7 DeltaM terms total
-    lags_output = 1;  
-    lags_money  = 6;  
-
-    Y_lag = lagmatrix(y_data, 1:lags_output);   
-    M_lag = lagmatrix(deltaM_data, 0:lags_money); 
-
-    % Drop initial NaN rows
-    startIdx = lags_money + 1 + 1;  
-    Y_dep    = y_data(startIdx:end);
-    X        = [ ones(length(Y_dep),1), ...
-                 Y_lag(startIdx:end,:), ...
-                 M_lag(startIdx:end,:) ];
-
-    coeffs = (X' * X) \ (X' * Y_dep);
-    
-    % Residual stdev
-    res       = Y_dep - X * coeffs;
-    sigma_eps = std(res);
-
-    %% (3) Build companion matrix for IRF
-    % State vector: [ y_{t-1}, DeltaM_t, DeltaM_{t-1}, ..., DeltaM_{t-6} ]
-    state_size = 8;  
-    A = zeros(state_size, state_size);
-
-    % Interpreting 'coeffs':
-    %  - coeffs(1) is constant
-    %  - coeffs(2) is y_{t-1}'s coeff
-    %  - coeffs(3:9) are the 7 money-growth terms (DeltaM_t..DeltaM_{t-6})
-
-    % Row 1 of A has the regression eq (minus constant)
-    A(1,1)      = coeffs(2);         % y_{t-1}
-    A(1,2:8)    = coeffs(3:9)';      % 7 money-lag coeffs (transpose => row vector)
-
-    % Shift money lags down by 1 each period
-    % We'll fill the sub-block (3..8, 2..7) with eye(6)
-    A(3:8, 2:7) = eye(6);
-
-    %% (4) Compute IRF: shock is +1 std dev in current DeltaM_t
-    irf = zeros(H_irf+1,1);
-    
-    % Impact state (time 0):
-    state = zeros(state_size,1);
-    state(2) = sigma_eps;   % put shock in current DeltaM slot
-
-    % Immediate impact on y
-    irf(1) = A(1,:) * state; 
-
-    % Evolve
-    for h = 1:H_irf
-        state = A * state;
-        irf(h+1) = state(1);
-    end
-    
-    IRF_money_all(:, rr) = irf;
-end
-
-%% (5) Plot median IRF
-figure('Name','Q4: IRF of y to Money Growth Shock','Position',[100 100 700 400]);
-irf_median = median(IRF_money_all, 2);
-
-plot(0:H_irf, irf_median, '-o','LineWidth',1.5);
-title('Median IRF of y to Monetary Shock (Q4 Model)');
-xlabel('Horizon'); ylabel('Response of y');
+figure('Name','Q4: IRF using 1 lag of y and (Contemporary + 6 lags of eps)','Position',[100 100 600 400]);
+plot(0:H_irf, medIRF_Q4, '-o','LineWidth',1.5);
+title('IRF from Regression: 1 lag of y + (Contemporary + 6 lags of \epsilon)');
+xlabel('Horizon'); ylabel('Impulse Response of y');
 grid on;
 
-% Save figure if desired
-saveas(gcf, 'IRF_Q4_Misspecified.png');
+saveas(gcf, 'IRFs_Q4_MonetaryShockLags.png');
 
-%% QUESTION 5: Jordà Local Projection IRF
-% ------------------------------------------------------------------------
-
-clearvars -except a b c d rho sigEps sigEta reps T H_irf yStar % Keep parameters
-
-rng(123); % For reproducibility
-
-H_lp = 20;  % Horizon for local projection
-
-IRF_lp_all = zeros(H_lp+1, reps);
-
-for rr = 1:reps
-    
-    % (1) Simulate data from true model
-    y_data = zeros(T,1);
-    M_data = zeros(T,1);
-
-    eps_vec = sigEps * randn(T,1); % Monetary shocks (this is your Shock_t)
-    eta_vec = sigEta * randn(T,1); % Productivity shocks
-
-    y_data(1) = 0;
-    M_data(1) = 0;
-
-    for t = 2:T
-        M_data(t) = rho * M_data(t-1) + eps_vec(t);
-        deltaM_t  = M_data(t) - M_data(t-1);
-        
-        y_data(t) = a * y_data(t-1) + b * deltaM_t + c * eps_vec(t) + d * eta_vec(t);
-    end
-    
-    % (2) For each horizon h, run the local projection regression
-    beta_h = zeros(H_lp+1, 1); % Store IRF for this replication
-    
-    for h = 0:H_lp
-        idx = 1:(T-h);
-        Y_h = y_data(idx + h);
-        Shock = eps_vec(idx);  % This is your "identified" shock
-        
-        % Regress y_{t+h} on shock_t + constant
-        X = [ones(length(Shock),1), Shock];
-        coeff = (X' * X) \ (X' * Y_h);
-        
-        beta_h(h+1) = coeff(2); % Coefficient on shock
-    end
-    
-    IRF_lp_all(:, rr) = beta_h;
-end
-
-%% Plot median IRF
-
-figure('Name','Local Projection IRF','Position',[100 100 700 400]);
-irf_median_lp = median(IRF_lp_all, 2);
-
-plot(0:H_lp, irf_median_lp, '-o','LineWidth',1.5);
-title('Median IRF of y to Monetary Shock (Local Projection)');
-xlabel('Horizon'); ylabel('Response of y');
-grid on;
-
-saveas(gcf, 'Q5_IRF_LocalProjection.png');
